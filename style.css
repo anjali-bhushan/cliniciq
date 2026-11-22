@@ -108,7 +108,7 @@ select:focus, input:focus { outline: none; border-color: #14b8a6; box-shadow: 0 
 .chart .dot { fill: #0d9488; }
 .chart .dot.fc { fill: #f59e0b; }
 .chart .fc-zone { fill: #fffbeb; }
-.fc-info { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 10px; }
+.fc-info { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 10px; }
 .fc-info div { background: #f0fdfa; border-radius: 12px; padding: 10px 12px; }
 .fc-info span { display: block; font-size: 12px; color: #5b7b77; }
 
@@ -182,3 +182,26 @@ footer { max-width: 1080px; margin: 0 auto; padding: 10px 20px 40px; text-align:
   .tabs button { min-width: 45%; }
   .row { flex-direction: column; }
 }
+
+/* Forecast accuracy */
+.method-note { background: #f0fdfa; border-radius: 10px; padding: 8px 12px; font-size: 14px; margin: 0 0 8px; }
+.acc-row { display: grid; grid-template-columns: 260px 1fr 70px 130px; gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid #eef7f6; font-size: 14px; }
+.acc-row.auto { border-bottom: none; background: #f0fdfa; border-radius: 12px; padding: 10px; margin-top: 6px; font-weight: 600; }
+.acc-bar { background: #eef7f6; height: 12px; border-radius: 999px; overflow: hidden; }
+.acc-bar div { height: 100%; background: linear-gradient(90deg, #14b8a6, #f59e0b); border-radius: 999px; }
+@media (max-width: 760px) { .acc-row { grid-template-columns: 1fr 60px; } .acc-row .acc-bar, .acc-row .small { display: none; } }
+
+/* ABC & policy */
+.abc-tiles { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+.abc-tile { display: flex; gap: 12px; align-items: center; border-radius: 14px; padding: 12px 14px; }
+.abc-tile span { display: block; font-size: 13px; color: #5b7b77; margin-top: 2px; }
+.abc-letter { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; font-size: 22px; font-weight: 800; color: white; }
+.abc-a { background: #fef2f2; } .abc-a .abc-letter { background: #dc2626; }
+.abc-b { background: #fffbeb; } .abc-b .abc-letter { background: #d97706; }
+.abc-c { background: #f0fdfa; } .abc-c .abc-letter { background: #0d9488; }
+.abc-badge { display: inline-block; width: 24px; height: 24px; border-radius: 7px; text-align: center; line-height: 24px; font-weight: 800; font-size: 12px; color: white; }
+.abc-badge.abc-a { background: #dc2626; } .abc-badge.abc-b { background: #d97706; } .abc-badge.abc-c { background: #0d9488; }
+table.sim td, table.sim th { font-size: 14px; }
+.good { color: #15803d; font-weight: 700; }
+.takeaway { background: #f0fdfa; border-left: 4px solid #0d9488; padding: 10px 14px; border-radius: 0 10px 10px 0; margin-top: 12px; }
+@media (max-width: 760px) { .abc-tiles { grid-template-columns: 1fr; } }

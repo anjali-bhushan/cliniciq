@@ -63,19 +63,122 @@ function forecast(history, weeksAhead) {
   return out;
 }
 
+// ---------- 2b. ACCURACY CHECK (backtest) ----------
+// Hide the last 4 weeks, forecast them from the first 8 weeks with each method,
+// and measure the error. WAPE = total absolute error / total actual usage
+// (better than MAPE here because some weeks have very small or zero usage).
+const METHODS = {
+  naive: { label: "Last week's value", run: function (h, n) { return new Array(n).fill(h[h.length - 1]); } },
+  ma4:   { label: "4-week average",    run: function (h, n) { const l = h.slice(-4); const m = l.reduce(function (s, x) { return s + x; }, 0) / l.length; return new Array(n).fill(m); } },
+  holt:  { label: "Holt's trend",      run: function (h, n) { return forecast(h, n); } }
+};
+function wape(pred, actual) {
+  const err = pred.reduce(function (s, x, i) { return s + Math.abs(x - actual[i]); }, 0);
+  const tot = actual.reduce(function (s, x) { return s + x; }, 0);
+  return tot > 0 ? err / tot : (err > 0 ? 1 : 0);
+}
+function backtest(history) {
+  const train = history.slice(0, history.length - 4), test = history.slice(-4);
+  const out = { test: test, scores: {}, best: "ma4" };
+  let bestScore = Infinity;
+  Object.keys(METHODS).forEach(function (k) {
+    const pred = METHODS[k].run(train, 4);
+    const w = wape(pred, test);
+    out.scores[k] = { wape: w, pred: pred, err: pred.reduce(function (s, x, i) { return s + Math.abs(x - test[i]); }, 0), act: test.reduce(function (s, x) { return s + x; }, 0) };
+    if (w < bestScore - 1e-9) { bestScore = w; out.best = k; }
+  });
+  return out;
+}
+
+// ---------- 2c. ABC ANALYSIS ----------
+// Rank items by yearly spend (forecast weekly use × 52 × unit cost).
+// A = the items that make up the first 80% of spend, B = next 15%, C = last 5%.
+// Each class gets its own service level: how often we accept NOT running out.
+const SERVICE = {
+  A: { level: 0.98, z: 2.05, review: "Check weekly" },
+  B: { level: 0.95, z: 1.645, review: "Check every 2 weeks" },
+  C: { level: 0.90, z: 1.28, review: "Check monthly" }
+};
+let abcCache = null;
+function abcClasses() {
+  if (abcCache) return abcCache;
+  const rows = state.items.map(function (it) {
+    const avg = it.history.reduce(function (s, x) { return s + x; }, 0) / it.history.length;
+    return { id: it.id, spend: avg * 52 * it.cost };
+  }).sort(function (a, b) { return b.spend - a.spend; });
+  const total = rows.reduce(function (s, r) { return s + r.spend; }, 0) || 1;
+  let cum = 0; const map = {};
+  rows.forEach(function (r) { cum += r.spend; map[r.id] = { cls: cum / total <= 0.8 ? "A" : cum / total <= 0.95 ? "B" : "C", spend: r.spend, share: r.spend / total }; });
+  map.__total = total;
+  abcCache = map;
+  return map;
+}
+function stdev(arr) {
+  const m = arr.reduce(function (s, x) { return s + x; }, 0) / arr.length;
+  return Math.sqrt(arr.reduce(function (s, x) { return s + (x - m) * (x - m); }, 0) / Math.max(1, arr.length - 1));
+}
+
 // Everything the screens need about one item
 function analyse(item) {
-  const next4 = forecast(item.history, 4);
+  const bt = backtest(item.history);
+  const method = bt.best;                                                  // the most accurate method for this item
+  const next4 = METHODS[method].run(item.history, 4).map(function (x) { return Math.max(0, x); });
   const weekly = next4.reduce(function (s, x) { return s + x; }, 0) / 4;   // forecast weekly use
-  const leadWeeks = item.leadDays / 7;
-  const safety = weekly * 1;                                               // one week of safety stock
-  const reorderPoint = Math.max(item.reorderLevel, weekly * leadWeeks + safety);
+  const abc = (abcClasses()[item.id] || { cls: "C" }).cls;
+  const svc = SERVICE[abc];
+  const leadWeeks = Math.max(1, Math.ceil(item.leadDays / 7));             // we order weekly, so lead time in whole weeks
+  const sd = stdev(item.history);                                          // how much weekly use jumps around
+  const safety = svc.z * sd * Math.sqrt(leadWeeks);                        // safety stock = z × variability × √lead time
+  const reorderPoint = weekly * leadWeeks + safety;                        // reorder point = demand during lead time + safety stock
+  const orderUpTo = reorderPoint + weekly * 4;                             // after ordering, stock should cover ~4 more weeks
   const weeksLeft = weekly > 0 ? item.stock / weekly : 99;
   let status = "OK";
   if (item.stock <= reorderPoint) status = "Reorder";
-  if (weeksLeft < leadWeeks || item.stock === 0) status = "Critical";
-  const orderQty = status === "OK" ? 0 : Math.max(1, Math.ceil(weekly * 4 + reorderPoint - item.stock));
-  return { next4: next4, weekly: weekly, reorderPoint: reorderPoint, weeksLeft: weeksLeft, status: status, orderQty: orderQty, orderCost: orderQty * item.cost };
+  if (weeksLeft < item.leadDays / 7 || item.stock === 0) status = "Critical";
+  const orderQty = status === "OK" ? 0 : Math.max(1, Math.ceil(orderUpTo - item.stock));
+  return { method: method, backtest: bt, next4: next4, weekly: weekly, abc: abc, service: svc, sd: sd, safety: safety, leadWeeks: leadWeeks,
+    reorderPoint: reorderPoint, orderUpTo: orderUpTo, weeksLeft: weeksLeft, status: status, orderQty: orderQty, orderCost: orderQty * item.cost };
+}
+
+// ---------- 2d. POLICY SIMULATION: old rule vs ClinicIQ ----------
+// Replays weeks 5–12 of each item's usage, starting from today's stock.
+// OLD rule (typical shelf-card habit): reorder when stock reaches the fixed reorder level,
+//   then order a fixed quantity of 2 × that level.
+// NEW rule (ClinicIQ): reorder point = forecast demand over lead time + ABC safety stock,
+//   then order up to reorder point + 4 weeks of forecast demand.
+// Forecasts inside the simulation only use weeks before the current week (no peeking ahead).
+function simulate(item, policy) {
+  const L = Math.max(1, Math.ceil(item.leadDays / 7));
+  const z = SERVICE[(abcClasses()[item.id] || { cls: "C" }).cls].z;
+  let onHand = item.stock, short = 0, demand = 0, stockoutWeeks = 0, stockValue = 0, orders = 0;
+  const pipeline = [];
+  for (let t = 4; t < 12; t++) {
+    for (let k = pipeline.length - 1; k >= 0; k--) { if (pipeline[k].arrives === t) { onHand += pipeline[k].qty; pipeline.splice(k, 1); } }
+    const d = item.history[t]; demand += d;
+    const served = Math.min(onHand, d);
+    if (d - served > 1e-9) { short += d - served; stockoutWeeks++; }
+    onHand -= served; stockValue += onHand * item.cost;
+    const position = onHand + pipeline.reduce(function (s, p) { return s + p.qty; }, 0);
+    let rop, target;
+    if (policy === "old") { rop = item.reorderLevel; target = position + 2 * item.reorderLevel; }
+    else {
+      const past = item.history.slice(0, t + 1), last4 = past.slice(-4);
+      const f = last4.reduce(function (s, x) { return s + x; }, 0) / last4.length;
+      rop = f * L + z * stdev(past) * Math.sqrt(L); target = rop + 4 * f;
+    }
+    if (position <= rop) { const q = Math.ceil(target - position); if (q > 0) { pipeline.push({ arrives: t + L, qty: q }); orders++; } }
+  }
+  return { short: short, demand: demand, stockoutWeeks: stockoutWeeks, avgStockValue: stockValue / 8, orders: orders };
+}
+function simulateAll() {
+  const out = {};
+  ["old", "new"].forEach(function (p) {
+    const r = { short: 0, demand: 0, stockoutWeeks: 0, avgStockValue: 0, orders: 0 };
+    state.items.forEach(function (it) { const s = simulate(it, p); Object.keys(r).forEach(function (k) { r[k] += s[k]; }); });
+    r.fill = r.demand ? 1 - r.short / r.demand : 1;
+    out[p] = r;
+  });
+  return out;
 }
 
 // ---------- 3. HELPERS ----------
@@ -171,11 +274,64 @@ function renderForecast() {
   $("fcChart").innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Usage and forecast chart">' + grid +
     '<rect x="' + x(11) + '" y="' + P / 2 + '" width="' + (x(15) - x(11)) + '" height="' + (H - P * 1.5) + '" class="fc-zone"/>' +
     '<path d="' + line(0, 11) + '" class="actual"/><path d="' + line(11, 15) + '" class="predicted"/>' + dots + labels + "</svg>";
+  $("fcMethod").innerHTML = "Method used for this item: <b>" + METHODS[a.method].label + "</b> (most accurate in the accuracy check, error " +
+    (a.backtest.scores[a.method].wape * 100).toFixed(1) + "%)";
   $("fcInfo").innerHTML =
     "<div><span>Forecast use</span><b>" + a.weekly.toFixed(1) + " " + esc(it.unit) + "/week</b></div>" +
     "<div><span>In stock</span><b>" + it.stock + " (" + (a.weeksLeft > 50 ? "50+" : a.weeksLeft.toFixed(1)) + " weeks)</b></div>" +
+    "<div><span>Class · safety stock</span><b>" + a.abc + " · " + a.safety.toFixed(1) + " (" + Math.round(a.service.level * 100) + "% level)</b></div>" +
     "<div><span>Reorder point</span><b>" + a.reorderPoint.toFixed(1) + "</b></div>" +
     "<div><span>Suggested order</span><b>" + (a.orderQty ? a.orderQty + " · " + rupees(a.orderCost) : "None needed") + "</b></div>";
+}
+
+function renderAccuracy() {
+  const tot = {}, wins = {};
+  Object.keys(METHODS).forEach(function (k) { tot[k] = { err: 0, act: 0 }; wins[k] = 0; });
+  state.items.forEach(function (it) {
+    const bt = backtest(it.history);
+    Object.keys(METHODS).forEach(function (k) { tot[k].err += bt.scores[k].err; tot[k].act += bt.scores[k].act; });
+    wins[bt.best]++;
+  });
+  const rows = Object.keys(METHODS).map(function (k) { return { k: k, w: tot[k].act ? tot[k].err / tot[k].act : 0 }; })
+    .sort(function (a, b) { return a.w - b.w; });
+  const worst = Math.max.apply(null, rows.map(function (r) { return r.w; }).concat([0.01]));
+  const auto = (function () {
+    let e = 0, a = 0;
+    state.items.forEach(function (it) { const bt = backtest(it.history); e += bt.scores[bt.best].err; a += bt.scores[bt.best].act; });
+    return a ? e / a : 0;
+  })();
+  $("accTable").innerHTML = rows.map(function (r, i) {
+    return '<div class="acc-row"><span>' + (i === 0 ? "🏆 " : "") + METHODS[r.k].label + '</span><div class="acc-bar"><div style="width:' + (r.w / worst * 100) + '%"></div></div>' +
+      "<b>" + (r.w * 100).toFixed(1) + '%</b><span class="muted small">best for ' + wins[r.k] + " items</span></div>";
+  }).join("") +
+    '<div class="acc-row auto"><span>⚙️ ClinicIQ (best method per item)</span><div class="acc-bar"><div style="width:' + (auto / worst * 100) + '%"></div></div><b>' +
+    (auto * 100).toFixed(1) + '%</b><span class="muted small">used in the app</span></div>';
+}
+
+function renderPolicy() {
+  const abc = abcClasses();
+  const summary = { A: { n: 0, share: 0 }, B: { n: 0, share: 0 }, C: { n: 0, share: 0 } };
+  state.items.forEach(function (it) { const a = abc[it.id]; summary[a.cls].n++; summary[a.cls].share += a.share; });
+  $("abcTiles").innerHTML = ["A", "B", "C"].map(function (c) {
+    return '<div class="abc-tile abc-' + c.toLowerCase() + '"><div class="abc-letter">' + c + "</div><div><b>" + summary[c].n + " items · " +
+      Math.round(summary[c].share * 100) + "% of spend</b><span>Service level " + Math.round(SERVICE[c].level * 100) + "% · " + SERVICE[c].review + "</span></div></div>";
+  }).join("");
+
+  const sim = simulateAll(), o = sim.old, n = sim["new"];
+  const change = function (a, b, lowerIsBetter) {
+    if (Math.abs(a - b) < 1e-9) return '<span class="muted">same</span>';
+    const pct = a ? (b - a) / a * 100 : 0;
+    const good = lowerIsBetter ? b <= a : b >= a;
+    return '<span class="' + (good ? "good" : "bad") + '">' + (pct > 0 ? "+" : "") + pct.toFixed(0) + "%</span>";
+  };
+  $("simTable").innerHTML = "<thead><tr><th>Measure (8 weeks, all items)</th><th>Old rule</th><th>ClinicIQ</th><th>Change</th></tr></thead><tbody>" +
+    "<tr><td>Weeks with a stock-out</td><td>" + o.stockoutWeeks + "</td><td>" + n.stockoutWeeks + "</td><td>" + change(o.stockoutWeeks, n.stockoutWeeks, true) + "</td></tr>" +
+    "<tr><td>Demand met on time (fill rate)</td><td>" + (o.fill * 100).toFixed(1) + "%</td><td>" + (n.fill * 100).toFixed(1) + "%</td><td>" + (Math.abs(n.fill - o.fill) < 0.0005 ? '<span class="muted">same</span>' : change(o.fill, n.fill, false)) + "</td></tr>" +
+    "<tr><td>Average money tied up in stock</td><td>" + rupees(o.avgStockValue) + "</td><td>" + rupees(n.avgStockValue) + "</td><td>" + change(o.avgStockValue, n.avgStockValue, true) + "</td></tr>" +
+    "<tr><td>Purchase orders placed</td><td>" + o.orders + "</td><td>" + n.orders + "</td><td>" + change(o.orders, n.orders, true) + "</td></tr></tbody>";
+  $("simTakeaway").innerHTML = "On this sample data, ClinicIQ keeps <b>" + (n.fill * 100).toFixed(1) + "%</b> of demand met with <b>" +
+    Math.round((1 - n.avgStockValue / o.avgStockValue) * 100) + "% less money tied up in stock</b> and <b>" +
+    Math.round((1 - n.orders / o.orders) * 100) + "% fewer orders</b> than the old fixed-level rule.";
 }
 
 // ---------- 6. INVENTORY TABLE ----------
@@ -187,16 +343,16 @@ function renderInventory() {
   catSel.value = current;
   const q = $("invSearch").value.toLowerCase(), cat = catSel.value, st = $("invStatus").value;
 
-  let html = "<thead><tr><th>Item</th><th>Stock</th><th>Forecast /wk</th><th>Weeks left</th><th>Status</th><th>Suggested order</th><th></th></tr></thead><tbody>";
+  let html = "<thead><tr><th>Item</th><th>ABC</th><th>Stock</th><th>Forecast /wk</th><th>Weeks left</th><th>Status</th><th>Suggested order</th><th></th></tr></thead><tbody>";
   let lastCat = "";
   state.items.forEach(function (it) {
     const a = analyse(it);
     if (q && it.name.toLowerCase().indexOf(q) < 0) return;
     if (cat && it.category !== cat) return;
     if (st && a.status !== st) return;
-    if (it.category !== lastCat) { html += '<tr class="cat-row"><td colspan="7">' + esc(it.category) + "</td></tr>"; lastCat = it.category; }
+    if (it.category !== lastCat) { html += '<tr class="cat-row"><td colspan="8">' + esc(it.category) + "</td></tr>"; lastCat = it.category; }
     html += "<tr><td><b>" + esc(it.name) + '</b><div class="muted small">' + esc(it.unit) + " · " + rupees(it.cost) + " · lead " + it.leadDays + "d</div></td>" +
-      "<td>" + it.stock + "</td><td>" + a.weekly.toFixed(1) + "</td><td>" + (a.weeksLeft > 50 ? "50+" : a.weeksLeft.toFixed(1)) + "</td>" +
+      "<td>" + '<span class="abc-badge abc-' + a.abc.toLowerCase() + '">' + a.abc + "</span></td><td>" + it.stock + "</td><td>" + a.weekly.toFixed(1) + "</td><td>" + (a.weeksLeft > 50 ? "50+" : a.weeksLeft.toFixed(1)) + "</td>" +
       "<td>" + pill(a.status) + "</td><td>" + (a.orderQty ? a.orderQty + " · " + rupees(a.orderCost) : "—") + "</td>" +
       '<td class="actions"><button title="Record usage" onclick="quick(\'' + it.id + '\',-1)">−1</button><button title="Stock received" onclick="quick(\'' + it.id + '\',1)">+1</button></td></tr>';
   });
@@ -338,10 +494,10 @@ $("entryForm").addEventListener("submit", function (e) {
 // ---------- 10. EXPORT & RESET ----------
 function exportCSV() {
   const cell = function (v) { v = String(v == null ? "" : v); return '"' + v.replace(/"/g, '""') + '"'; };
-  const lines = [["Category", "Item", "Unit", "In stock", "Reorder level", "Lead time (days)", "Unit cost (Rs)", "Forecast weekly use", "Weeks left", "Status", "Suggested order qty", "Suggested order cost (Rs)"].map(cell).join(",")];
+  const lines = [["Category", "Item", "ABC class", "Unit", "In stock", "Reorder level", "Lead time (days)", "Unit cost (Rs)", "Forecast weekly use", "Weeks left", "Status", "Suggested order qty", "Suggested order cost (Rs)"].map(cell).join(",")];
   state.items.forEach(function (it) {
     const a = analyse(it);
-    lines.push([it.category, it.name, it.unit, it.stock, it.reorderLevel, it.leadDays, it.cost, a.weekly.toFixed(1), a.weeksLeft > 50 ? "50+" : a.weeksLeft.toFixed(1), a.status, a.orderQty, Math.round(a.orderCost)].map(cell).join(","));
+    lines.push([it.category, it.name, a.abc, it.unit, it.stock, it.reorderLevel, it.leadDays, it.cost, a.weekly.toFixed(1), a.weeksLeft > 50 ? "50+" : a.weeksLeft.toFixed(1), a.status, a.orderQty, Math.round(a.orderCost)].map(cell).join(","));
   });
   const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
@@ -353,5 +509,5 @@ function resetData() {
 }
 
 // ---------- 11. START ----------
-function renderAll() { renderDashboard(); renderInventory(); renderLab(); renderRequests(); }
+function renderAll() { abcCache = null; renderAccuracy(); renderPolicy(); renderDashboard(); renderInventory(); renderLab(); renderRequests(); }
 load(); renderAll();

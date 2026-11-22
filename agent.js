@@ -10,7 +10,7 @@ function assistantInstructions() {
     const a = analyse(it);
     return "- " + it.name + " [" + it.category + "] stock " + it.stock + " " + it.unit + ", forecast " + a.weekly.toFixed(1) +
       "/week, " + (a.weeksLeft > 50 ? "50+" : a.weeksLeft.toFixed(1)) + " weeks left, lead " + it.leadDays + "d, ₹" + it.cost +
-      " each, status " + a.status + (a.orderQty ? ", suggested order " + a.orderQty + " (₹" + Math.round(a.orderCost) + ")" : "");
+      " each, ABC class " + a.abc + ", safety stock " + a.safety.toFixed(1) + ", status " + a.status + (a.orderQty ? ", suggested order " + a.orderQty + " (₹" + Math.round(a.orderCost) + ")" : "");
   }).join("\n");
   const cases = state.cases.map(function (c) {
     return "- " + c.id + ": " + c.type + ", " + c.lab + ", sent " + c.sent + ", due " + c.due + ", status " + c.status + ", ₹" + c.cost;
@@ -19,7 +19,7 @@ function assistantInstructions() {
 
   return "You are the ClinicIQ assistant for a dental clinic's inventory, purchasing and dental-lab case management. Today is " + todayStr() + ".\n" +
     "This is a PROTOTYPE with SAMPLE data. Currency: Indian rupees (₹).\n\n" +
-    "Inventory (forecast uses Holt's trend smoothing; reorder point = forecast weekly use × lead time + 1 week safety stock):\n" + items +
+    "Inventory (for each item the app backtests three forecasting methods: last week's value, 4-week average and Holt's trend, and uses the one with the lowest WAPE error; items are ABC-classified by yearly spend with service levels A 98%, B 95%, C 90%; safety stock = z × weekly-usage standard deviation × √lead time in weeks; reorder point = forecast weekly use × lead time + safety stock):\n" + items +
     "\n\nLab cases:\n" + cases + "\n\nStaff requirements:\n" + reqs + "\n\n" +
     "Rules (always follow):\n" +
     "1. Base stock, forecast and lab answers on the data above. Show quantities and ₹ totals where useful.\n" +
