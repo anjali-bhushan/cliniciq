@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClinicIQ · Dental inventory & lab management (prototype)</title>
+  <meta name="description" content="ClinicIQ: a prototype for dental clinic inventory, lab cases, demand forecasting and an AI purchasing assistant.">
+  <link rel="stylesheet" href="style.css?v=1">
+</head>
+<body>
+
+  <!-- ===== PROTOTYPE NOTICE ===== -->
+  <div class="proto-banner">
+    🧪 <b>Prototype only.</b> For security and safety reasons, all items, stock levels, prices, suppliers and lab cases are
+    <b>sample data</b>. No real clinic or patient data is used. Please don't enter patient names or personal details.
+  </div>
+
+  <!-- ===== HERO ===== -->
+  <header class="hero">
+    <div class="hero-inner">
+      <div class="hero-text">
+        <span class="tag">🦷 Dental clinic operations</span>
+        <h1>Clinic<span>IQ</span></h1>
+        <p class="tagline">Inventory, lab cases and purchasing for a dental clinic, in one place.
+          See what's running low, forecast demand, track lab work, and ask AI where to order.</p>
+        <div class="hero-actions">
+          <button class="btn-primary" onclick="openEntry('usage')">＋ Staff entry</button>
+          <button class="btn-ghost" onclick="showTab('ai')">🤖 Ask the AI assistant</button>
+        </div>
+      </div>
+
+      <!-- Tooth illustration drawn in code (SVG) -->
+      <svg class="tooth" viewBox="0 0 200 220" aria-hidden="true">
+        <defs>
+          <linearGradient id="toothGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#ffffff"/>
+            <stop offset="1" stop-color="#d9f3f0"/>
+          </linearGradient>
+        </defs>
+        <path d="M100 30c-18-14-48-20-66-2-20 20-14 58-4 86 8 22 10 46 14 66 4 22 22 26 28 4 5-18 8-44 28-44s23 26 28 44c6 22 24 18 28-4 4-20 6-44 14-66 10-28 16-66-4-86-18-18-48-12-66 2z"
+              fill="url(#toothGrad)" stroke="#0f766e" stroke-width="5" stroke-linejoin="round"/>
+        <path d="M62 58c8-8 20-10 30-6" fill="none" stroke="#99f6e4" stroke-width="8" stroke-linecap="round"/>
+        <circle cx="160" cy="40" r="6" fill="#fde68a"/><circle cx="176" cy="62" r="3.5" fill="#fde68a"/>
+        <circle cx="30" cy="160" r="4" fill="#99f6e4"/>
+      </svg>
+    </div>
+  </header>
+
+  <!-- ===== TABS ===== -->
+  <nav class="tabs" id="tabs">
+    <button data-tab="dashboard" class="active">📊 Dashboard</button>
+    <button data-tab="inventory">📦 Inventory</button>
+    <button data-tab="lab">🧪 Lab cases</button>
+    <button data-tab="requests">📝 Requirements</button>
+    <button data-tab="ai">🤖 AI assistant</button>
+  </nav>
+
+  <main>
+    <!-- DASHBOARD -->
+    <section id="tab-dashboard" class="tab active">
+      <div class="kpis" id="kpis"></div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h2>🛒 Reorder this week</h2><span class="muted" id="reorderTotal"></span></div>
+          <div id="reorderList"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>🧪 Lab cases needing attention</h2></div>
+          <div id="labAlerts"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>📈 Demand forecast</h2>
+          <select id="fcItem" aria-label="Item to forecast"></select>
+        </div>
+        <p class="muted">Weekly usage for the last 12 weeks (solid) and the next 4 weeks forecast (dashed), using Holt's trend smoothing.</p>
+        <div id="fcChart" class="chart"></div>
+        <div id="fcInfo" class="fc-info"></div>
+      </div>
+    </section>
+
+    <!-- INVENTORY -->
+    <section id="tab-inventory" class="tab">
+      <div class="card">
+        <div class="card-head">
+          <h2>📦 Inventory</h2>
+          <button class="btn-small" onclick="openEntry('item')">＋ Add item</button>
+        </div>
+        <div class="filters">
+          <input id="invSearch" placeholder="🔍 Search items…">
+          <select id="invCat"></select>
+          <select id="invStatus">
+            <option value="">All statuses</option>
+            <option value="Critical">Critical</option>
+            <option value="Reorder">Reorder</option>
+            <option value="OK">OK</option>
+          </select>
+        </div>
+        <div class="table-wrap"><table id="invTable"></table></div>
+      </div>
+    </section>
+
+    <!-- LAB CASES -->
+    <section id="tab-lab" class="tab">
+      <div class="card">
+        <div class="card-head">
+          <h2>🧪 Lab case register</h2>
+          <button class="btn-small" onclick="openEntry('case')">＋ New lab case</button>
+        </div>
+        <p class="muted">Cases are tracked by case ID only. Never enter patient names here.</p>
+        <div class="filters">
+          <select id="labFilter">
+            <option value="open">Open cases</option>
+            <option value="all">All cases</option>
+            <option value="overdue">Overdue</option>
+          </select>
+        </div>
+        <div class="table-wrap"><table id="labTable"></table></div>
+      </div>
+    </section>
+
+    <!-- REQUIREMENTS -->
+    <section id="tab-requests" class="tab">
+      <div class="card">
+        <div class="card-head">
+          <h2>📝 Staff requirements</h2>
+          <button class="btn-small" onclick="openEntry('request')">＋ New requirement</button>
+        </div>
+        <p class="muted">Anything the team needs that isn't in stock yet: new materials, instruments, repairs.</p>
+        <div id="reqList"></div>
+      </div>
+    </section>
+
+    <!-- AI ASSISTANT -->
+    <section id="tab-ai" class="tab">
+      <div class="card ai-card">
+        <h2>🤖 ClinicIQ AI assistant</h2>
+        <p class="muted">Ask about stock, demand forecasts and lab cases, or ask it to <b>search Google for suppliers</b>.
+          It uses the data on this page. It never places orders, and it doesn't give clinical or drug-dosing advice.</p>
+
+        <div class="keybox">
+          <p class="small">Uses Google Gemini with Google Search. Get a free API key at
+            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.
+            Your key stays in your browser only.</p>
+          <div id="keyRow" class="row">
+            <input type="password" id="apiKey" placeholder="Paste your Gemini API key">
+            <button id="saveKeyBtn" class="btn-small">Save key</button>
+          </div>
+          <p class="small"><span id="keyStatus"></span> <button id="forgetBtn" class="link-btn">Forget key</button></p>
+        </div>
+
+        <div class="chips">
+          <button class="chip">What should we order this week, and what will it cost?</button>
+          <button class="chip">Find suppliers in India for nitrile gloves and compare prices</button>
+          <button class="chip">Which lab cases are overdue or at risk?</button>
+          <button class="chip">Which items are we likely to run out of in the next 2 weeks?</button>
+        </div>
+
+        <div id="chatLog" class="chat-log"></div>
+        <div class="row">
+          <input type="text" id="chatInput" placeholder="e.g. Where can we buy rotary NiTi files in Bengaluru?">
+          <button id="askBtn" class="btn-small">Ask</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===== STAFF ENTRY (pop-up) ===== -->
+  <div class="modal" id="entryModal" aria-hidden="true">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>＋ Staff entry</h2>
+        <button class="close" onclick="closeEntry()" aria-label="Close">✕</button>
+      </div>
+      <div class="entry-tabs" id="entryTabs">
+        <button data-entry="usage">Record usage</button>
+        <button data-entry="receive">Stock received</button>
+        <button data-entry="request">New requirement</button>
+        <button data-entry="case">New lab case</button>
+        <button data-entry="item">New inventory item</button>
+      </div>
+      <form id="entryForm"></form>
+      <p class="small warn-note">Prototype: entries are saved in this browser only. Don't enter patient names or personal data.</p>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <footer>
+    <div class="footer-actions">
+      <button class="btn-small ghost" onclick="exportCSV()">⬇️ Download inventory (Excel/CSV)</button>
+      <button class="btn-small ghost" onclick="resetData()">↺ Reset to sample data</button>
+    </div>
+    <p class="disclaimer">
+      <b>Disclaimer:</b> ClinicIQ is a <b>prototype</b> built for demonstration. For security and safety reasons it uses
+      <b>sample items, quantities, prices and lab cases only</b>; it holds no real clinic, patient or supplier records.
+      Prices are indicative estimates. Forecasts are statistical estimates, not guarantees. Supplier suggestions from the
+      AI come from web search and must be verified before ordering. Always follow manufacturer instructions, expiry dates
+      and local regulations for medicines and medical devices. Entries you make are stored only in your own browser.
+    </p>
+    <p>Built by <b>Anjali Bhushan</b> · IIM Kozhikode ·
+      <a href="https://github.com/anjali-bhushan/cliniciq" target="_blank" rel="noopener">View code on GitHub</a></p>
+  </footer>
+
+  <script src="data.js?v=1"></script>
+  <script src="app.js?v=1"></script>
+  <script src="agent.js?v=1"></script>
+</body>
+</html>
